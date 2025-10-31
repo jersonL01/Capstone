@@ -1,16 +1,31 @@
+// src/app/admin/perfil-user/page.tsx
 'use client';
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Swal from 'sweetalert2';
+import { signOut } from 'next-auth/react';
+
+/** Parseo seguro: intenta leer JSON solo si el response realmente lo trae
+ *  y evita romper con "Unexpected end of JSON input".
+ */
+async function readJsonSafe(res: Response) {
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) return null;
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
 
 export default function PerfilUsuarioPage() {
   const [form, setForm] = useState({
     nombres: '',
     telefono: '',
     email: '',
-    pass: '', // nunca viene del backend
+    pass: '', // opcional en UI; no se actualiza en OAuth
   });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -18,7 +33,7 @@ export default function PerfilUsuarioPage() {
   const [saving, setSaving] = useState(false);
   const router = useRouter();
 
-  // 🔌 Cargar datos del usuario logueado
+  // Carga de datos del usuario autenticado
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -26,13 +41,20 @@ export default function PerfilUsuarioPage() {
         setLoading(true);
         setErr(null);
 
-        const res = await fetch('/api/perfil/', {
-          method: 'GET',
-          credentials: 'include',
-          cache: 'no-store',
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || 'No se pudo cargar el perfil');
+        const res = await fetch('/api/perfil', { method: 'GET', cache: 'no-store' });
+
+        if (res.status === 401) {
+          setErr('No autenticado');
+          router.push('/auth/login');
+          return;
+        }
+
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          const msg = (data && (data.error || data.message)) || `Error HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        if (!data) throw new Error('Respuesta vacía del servidor');
 
         if (!alive) return;
         setForm({
@@ -48,16 +70,17 @@ export default function PerfilUsuarioPage() {
         if (alive) setLoading(false);
       }
     })();
-    return () => { alive = false; };
-  }, []);
+    return () => {
+      alive = false;
+    };
+  }, [router]);
 
+  // Cerrar sesión con NextAuth
   const handleLogout = async () => {
     if (loggingOut) return;
     setLoggingOut(true);
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-      router.push('/');
-      router.refresh();
+      await signOut({ callbackUrl: '/' });
     } finally {
       setLoggingOut(false);
     }
@@ -68,11 +91,11 @@ export default function PerfilUsuarioPage() {
     setForm((s) => ({ ...s, [name]: value }));
   };
 
+  // Guardar cambios del perfil
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
 
-    // ⚠️ Confirmación (sin mostrar datos si no quieres)
     const { isConfirmed } = await Swal.fire({
       title: '¿Guardar cambios?',
       icon: 'question',
@@ -84,24 +107,30 @@ export default function PerfilUsuarioPage() {
 
     setSaving(true);
     try {
-      // arma payload sin enviar pass vacío
-      const payload: any = {
-        nombres: form.nombres,
-        telefono: form.telefono,
-      };
-      if (form.pass.trim()) payload.pass = form.pass;
+      // Solo actualizamos nombre y teléfono; el password no aplica para OAuth
+      const payload = { nombres: form.nombres, telefono: form.telefono };
 
-      const res = await fetch('/api/usuarios/me', {
+      const res = await fetch('/api/perfil', {
         method: 'PUT',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'No se pudieron guardar los cambios');
 
-      await Swal.fire('Guardado', '✅ Cambios guardados correctamente', 'success');
-      setForm((s) => ({ ...s, pass: '' })); // limpia el campo pass
+      if (res.status === 401) {
+        setErr('No autenticado');
+        router.push('/auth/login');
+        return;
+      }
+
+      const data = await readJsonSafe(res);
+      if (!res.ok) {
+        const msg = (data && (data.error || data.message)) || `Error HTTP ${res.status}`;
+        throw new Error(msg);
+      }
+      if (!data) throw new Error('Respuesta vacía del servidor');
+
+      await Swal.fire('Guardado', 'Cambios guardados correctamente', 'success');
+      setForm((s) => ({ ...s, pass: '' }));
       router.refresh();
     } catch (e: any) {
       setErr(e?.message ?? 'Error al guardar');
@@ -139,7 +168,11 @@ export default function PerfilUsuarioPage() {
       <div className="flex-1 flex flex-col">
         <header className="bg-[#e6b352] px-6 py-3 flex justify-between items-center border-b border-black/10">
           <h1 className="text-xl font-bold text-black">Perfil Usuario</h1>
-          <button onClick={handleLogout} disabled={loggingOut} className="px-5 py-2 rounded bg-[#e63929] text-white font-semibold hover:brightness-95 disabled:opacity-60">
+          <button
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="px-5 py-2 rounded bg-[#e63929] text-white font-semibold hover:brightness-95 disabled:opacity-60"
+          >
             {loggingOut ? 'Cerrando…' : 'Cerrar Sesión'}
           </button>
         </header>
@@ -155,7 +188,7 @@ export default function PerfilUsuarioPage() {
                 {/* Avatar */}
                 <div className="flex justify-center md:justify-start">
                   <div className="w-32 h-32 rounded-full bg-white flex items-center justify-center border-8 border-black/80">
-                    <svg viewBox="0 0 24 24" className="w-16 h-16">
+                    <svg viewBox="0 0 24 24" className="w-16 h-16" aria-hidden="true">
                       <circle cx="12" cy="8" r="3.5" fill="#8fb2ff" stroke="black" strokeWidth="1.5" />
                       <path d="M4.5 19.5c1.2-4.2 5.1-5.8 7.5-5.8s6.3 1.6 7.5 5.8" fill="#8fb2ff" stroke="black" strokeWidth="1.5" strokeLinecap="round" />
                       <circle cx="12" cy="12" r="10" fill="none" stroke="black" strokeWidth="1.5" />
@@ -168,22 +201,46 @@ export default function PerfilUsuarioPage() {
                   <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-5">
                     <div>
                       <label className="block text-black font-semibold mb-2">Nombre Completo</label>
-                      <input name="nombres" value={form.nombres} onChange={onChange} className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none" />
+                      <input
+                        name="nombres"
+                        value={form.nombres}
+                        onChange={onChange}
+                        className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none"
+                      />
                     </div>
 
                     <div>
                       <label className="block text-black font-semibold mb-2">Telefono</label>
-                      <input name="telefono" value={form.telefono} onChange={onChange} className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none" />
+                      <input
+                        name="telefono"
+                        value={form.telefono}
+                        onChange={onChange}
+                        className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none"
+                      />
                     </div>
 
                     <div className="md:col-span-2">
                       <label className="block text-black font-semibold mb-2">Correo Electronico</label>
-                      <input name="email" type="email" value={form.email} onChange={onChange} readOnly className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none" />
+                      <input
+                        name="email"
+                        type="email"
+                        value={form.email}
+                        readOnly
+                        className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none"
+                      />
                     </div>
 
+                    {/* Campo de contraseña opcional en UI, pero no se actualiza en OAuth */}
                     <div className="md:col-span-2">
                       <label className="block text-black font-semibold mb-2">Contraseña</label>
-                      <input name="pass" type="password" value={form.pass} onChange={onChange} placeholder="********" className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none" />
+                      <input
+                        name="pass"
+                        type="password"
+                        value={form.pass}
+                        onChange={onChange}
+                        placeholder="********"
+                        className="w-full h-10 rounded-lg bg-[#dcc392] px-4 outline-none"
+                      />
                     </div>
 
                     <div className="col-span-1 md:col-span-2 flex justify-end gap-3 pt-4">

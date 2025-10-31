@@ -4,17 +4,57 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import Navbar from '@/app/components/Navbar';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import ButtonGoogle from '@/app/components/ButtonGoogle';
+import Swal from 'sweetalert2';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false); // 👈 nuevo
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const sp = useSearchParams();
+  const alertedRef = useRef(false); // evita alertas duplicadas en dev
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  // 🔔 Manejo de querystring con prioridad: created > error
+  useEffect(() => {
+    if (!sp || alertedRef.current) return;
+
+    const created = sp.get('created');
+    const err = sp.get('error');
+
+    const cleanUrl = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('created');
+      url.searchParams.delete('error');
+      window.history.replaceState({}, '', url.toString());
+    };
+
+    (async () => {
+      if (created === '1') {
+        alertedRef.current = true;
+        await Swal.fire('Cuenta creada', 'Tu cuenta Google fue registrada. Inicia sesión.', 'success');
+        cleanUrl();
+        return;
+      }
+
+      if (err) {
+        alertedRef.current = true;
+        const map: Record<string, string> = {
+          AccessDenied: 'Acceso denegado. No tienes permiso para iniciar sesión aquí.',
+          OAuthAccountNotLinked: 'Tu correo ya existe con otro método. Inicia con el mismo proveedor.',
+          Configuration: 'Error de configuración de OAuth.',
+          Default: 'Ocurrió un error al iniciar sesión.',
+        };
+        await Swal.fire('Aviso', map[err] ?? map['Default'], 'warning');
+        cleanUrl();
+      }
+    })();
+  }, [sp]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,21 +69,44 @@ export default function LoginPage() {
     }
 
     try {
-      setLoading(true); // 👈 activa spinner
+      setLoading(true);
+      setError('');
 
+      // 1) Login: tu backend debe setear cookie de sesión
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.error || 'Error al iniciar sesión');
-        setLoading(false); // apaga spinner si hay error
+        setError(data?.error || 'Error al iniciar sesión');
+        setLoading(false);
         return;
       }
 
+      // 2) Verificar rol con la cookie ya guardada
+      const meRes = await fetch('/api/auth/me', {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const me = await meRes.json().catch(() => ({}));
+      if (!meRes.ok) {
+        setError('No se pudo verificar el rol del usuario');
+        setLoading(false);
+        return;
+      }
+
+      const tipo = me?.tipo ?? me?.user?.tipo ?? me?.rol ?? me?.user?.rol;
+
+      if (String(tipo).toLowerCase() !== 'administrador') {
+        setError('Solo los administradores pueden acceder al panel');
+        setLoading(false);
+        return;
+      }
+
+      // 3) Adelante
       router.push('/admin/panel');
       router.refresh();
     } catch {
@@ -66,28 +129,18 @@ export default function LoginPage() {
             fill="none"
             viewBox="0 0 24 24"
           >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-            />
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
           </svg>
         </div>
       )}
 
       <div className="relative z-10 flex items-center justify-center min-h-svh">
-        <div className="w-[92%] max-w-[420px] rounded-xl border border-white/15
-                        bg-gradient-to-b from-white/15 to-white/10 backdrop-blur-md
-                        shadow-[0_8px_40px_rgba(0,0,0,0.35)] px-8 py-10 flex flex-col items-center">
-
+        <div
+          className="w-[92%] max-w-[420px] rounded-xl border border-white/15
+                     bg-gradient-to-b from-white/15 to-white/10 backdrop-blur-md
+                     shadow-[0_8px_40px_rgba(0,0,0,0.35)] px-8 py-10 flex flex-col items-center"
+        >
           <div className="w-28 h-28 mb-6 rounded-full bg-blue-600 flex items-center justify-center shadow-lg overflow-hidden">
             <Image src="/img/iconoUser.png" alt="Usuario" width={80} height={80} className="object-contain" priority />
           </div>
@@ -117,7 +170,7 @@ export default function LoginPage() {
             <div className="relative">
               <div className="absolute left-3 top-1/2 -translate-y-1/2 rounded-md p-2 bg-black/30">
                 <svg width="20" height="20" viewBox="0 0 24 24" className="fill-white/90">
-                  <path d="M17 8h-1V6a4 4 0 10-8 0v2H7a2 2 0 00-2 2v8a2 2 0 002 2h10a2 2 0 002-2v-8a2 2 0 00-2-2zm-6 6.7V17h2v-2.3a2 2 0 10-2 0zM9 8V6a3 3 0 016 0v2H9z" />
+                  <path d="M17 8h-1V6a4 4 0 10-8 0v2H7a2 2 0 00-2 2v8a2 2 0 002 2h10a2 2 0 002-2v-8a2 2 0 00-2-2zm-6 6.7V17h2v-2.3a2 2 0 10-2 0zM9 8V6a3 3 0 116 0v2H9z" />
                 </svg>
               </div>
               <input
@@ -138,7 +191,9 @@ export default function LoginPage() {
                 <input type="checkbox" className="accent-white/90" />
                 Remember me
               </label>
-              <Link href="#" className="underline hover:text-blue-200">Recuperar Contraseña</Link>
+              <Link href="/auth/password" className="underline hover:text-blue-200">
+                Recuperar Contraseña
+              </Link>
             </div>
 
             <button
@@ -150,9 +205,16 @@ export default function LoginPage() {
               {loading ? 'Ingresando…' : 'Iniciar Sesión'}
             </button>
 
+            {/* Google: si NextAuth devuelve ?error=AccessDenied, arriba mostramos la alerta */}
+            <ButtonGoogle className="mt-1" callbackUrl="/admin/panel">
+              Continuar con Google
+            </ButtonGoogle>
+
             <p className="text-center text-white/90 mt-3">
               ¿No tienes cuenta?{' '}
-              <Link href="/auth/register" className="font-semibold underline">Regístrate</Link>
+              <Link href="/auth/register" className="font-semibold underline">
+                Regístrate
+              </Link>
             </p>
           </form>
         </div>

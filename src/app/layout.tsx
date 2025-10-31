@@ -17,6 +17,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AquaSave",
   description: "",
+   icons: {
+    icon: "/img/logo.png",
+  },
 
 };
 
